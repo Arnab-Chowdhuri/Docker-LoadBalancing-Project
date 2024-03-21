@@ -1,0 +1,14 @@
+upstream frontend {
+    server fe_container_1:80;
+    server fe_container:80;
+}
+
+server {
+    listen 80;
+    server_name _default;
+
+    location / {
+        include proxy_params;
+        proxy_pass http://frontend;
+    }
+}

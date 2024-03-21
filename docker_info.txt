@@ -1,0 +1,188 @@
+create 3 containers in a single instance in a same bridge network.
+Before creating the containers, it's beneficial to create a Docker network to facilitate communication between the containers. You can do this with the following command:
+create a network for that:
+$ docker network create my_3tire_network
+
+To see the ip address of a container:
+
+$ docker inspect <container_name>
+
+This IP address is the internal IP assigned to the container by Docker's networking system.
+
+-----------------------------------------Docker Volume---------------------------------------------------------
+
+
+To keep the data persistent even if the database container is stopped and then started again, you can use Docker volumes. Volumes in Docker allow you to store data separately from the container, ensuring that data remains persistent even if the container is removed or stopped.
+
+You can create a Docker volume using the following command:
+$ docker volume create db_data_volume
+
+After that add this line to your database Dockerfile:
+VOLUME /var/lib/mysql
+
+When you run the DataBase container, specify the volume you created earlier using the -v flag:
+$ docker run -d -v db_data_volume:/var/lib/mysql --network my_3tire_network --name db_c <database_img>
+Basically this means all the data present inside /var/lib/mysql will be stored in a Docker Volume which is managed by Docker
+Now, when you start and stop the db_c container, the data will be stored in the db_data_volume volume, ensuring persistence across container restarts.
+
+-----------------------------------------Dockerfile tree-------------------------------------------------------
+.
+├── backendDockerFile
+│   ├── Dockerfile
+│   └── new_chatapp
+├── databaseDockerFile
+│   └── Dockerfile
+└── frontendDockerFile
+    ├── Dockerfile
+    └── nginx.conf
+
+-----------------------------------------Dockerfile for Database------------------------------------------------
+
+FROM mysql:latest
+ENV MYSQL_DATABASE chat_db
+ENV MYSQL_ROOT_PASSWORD root123
+ENV MYSQL_USER admin
+ENV MYSQL_PASSWORD admin
+EXPOSE 3306
+
+# for keeping the data persistent in the database
+VOLUME /var/lib/mysql
+
+-----------------------------------------
+
+To build this Dockerfile: $ docker build -t <image_name> .
+*Note: run this command in the directory where Dockerfile is present.
+
+Create the container for Database:
+$ docker run -d --name db_c --network my_3tire_network -v db_data_volume:/var/lib/mysql <image_name>
+
+------------------------------------------
+-----------------------------------------Dockerfile for Backend--------------------------------------------------
+
+FROM python:3.6
+
+ENV CHATDB=chat_db
+ENV CHATDBUSER=admin
+ENV CHATDBPASSWORD=admin
+ENV CHATDBHOST=db_c
+
+RUN apt-get update
+RUN apt-get install --yes python3-pip
+
+WORKDIR /project
+COPY new_chatapp_docker .
+
+WORKDIR /project/
+RUN pip3 install mysqlclient
+RUN pip3 install -r requirements.txt
+
+EXPOSE 8000
+
+WORKDIR /project/fundoo/
+CMD ["/bin/bash", "-c", "python3 manage.py makemigrations && python3 manage.py migrate && python3 manage.py runserver 0.0.0.0:8000"]
+
+---------------------------------------------
+To build this Dockerfile: $ docker build -t <image_name> .
+*Note: run this command in the directory where Dockerfile is present.
+
+To run be_container:
+$ docker run -d --name be_container  -v /Docker-Project/my_3tire_web_app/be_part/new_chatapp_docker:/project --network my_3tire_network <image_name>
+$ docker run -d --name be_container_1 --network my_network -e CHATDBHOST=10.0.159.152 be_img
+---------------------------------------------
+
+---------------------------------------------------------------------------------Dockerfile for Frontend------------------------------------------------------------------------------------
+
+FROM ubuntu
+RUN apt-get update
+RUN apt-get install -y nginx
+COPY nginx.conf /etc/nginx/sites-available/fundoo
+RUN ln -s /etc/nginx/sites-available/fundoo /etc/nginx/sites-enabled
+RUN rm -rf /etc/nginx/sites-enabled/default
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+
+----------------------------------------nginx.conf-------------------------------------
+
+server {
+  listen 80;
+  server_name _default;
+#  location = /favicon.ico { access_log off; log_not_found off; }
+#  location /static/ {
+#      root /home/ubuntu/new_chatapp/fundoo;
+#  }
+  location / {
+      include proxy_params;
+      proxy_pass http://{{BE_CONTAINER_HOST}}:8000;
+  }
+}
+----------------------------------------------------------------------------------------
+
+--------------------------------------------
+To build this Dockerfile: $ docker build --build-arg BE_CONTAINER_HOST=<actual_hostname> -t <image_name> .
+*Note: run this command in the directory where Dockerfile is present.
+
+Create the container for FrontEnd:
+$ docker run -d --name fe_container --network my_3tire_network -p 80:80 fe_img
+$ docker run -d --name fe_container -e BACKEND_HOST=be_container --network my_3tire_network -p 80:80 fe_img
+$ docker run -d --name fe_container --network my_network -p 80:80 fe_img
+
+---------------------------------------------
+-------------------------------------------------------------------------NGINX Container----------------------------------------------------------------------------------------------
+$ docker run -d --name nginx_container --network my_network -p 80:80 nginx_img
+
+steps: build be --> run be --> python3 fe_config --> build fe --> run fe --> python3 local_config --> build nginx --> run nginx
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+------------------------------------------------------------------------- Docker Compose ------------------------------------------------------------------
+
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: /Docker-Project/my_3tire_web_app/fe_part/
+    ports:
+      - "80:80"
+    networks:
+      - my_network
+    container_name: fe_container
+    depends_on:
+      - backend
+      #      backend:
+        #        condition: service_healthy
+
+  backend:
+    build:
+      context: /Docker-Project/my_3tire_web_app/be_part/
+    networks:
+      - my_network
+    container_name: be_container
+    depends_on:
+      database:
+        condition: service_healthy
+          #    healthcheck:
+          #      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+          #      interval: 20s
+          #      retries: 6
+
+  database:
+    build:
+      context: /Docker-Project/my_3tire_web_app/db_part/
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - my_network
+    container_name: db_c
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      retries: 5
+
+networks:
+  my_network:
+    name: my_3tire_compose_network
+    driver: bridge
+
+volumes:
+  db_data:
+
